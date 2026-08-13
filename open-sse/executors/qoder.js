@@ -124,12 +124,20 @@ function truncate(s, n) {
   return s && s.length > n ? `${s.slice(0, n)}...` : s || "";
 }
 
+// Client-facing model id → upstream key Qoder actually accepts. The renamed
+// registry id `claude-opus-4-7` must resolve to the real upstream key `ultimate`
+// for model_config lookup + the X-Model-Key header; logging keeps the renamed id.
+const QODER_UPSTREAM_KEY_ALIAS = {
+  "claude-opus-4-7": "ultimate",
+};
+
 /**
  * Map the OpenAI-style request body into the exact shape Qoder expects.
  */
 async function buildQoderRequestBody({ model, body, credentials, log, proxyOptions, signal }) {
-  const qoderKey = String(model || "").replace(/^qoder\//, "");
-  
+  const rawKey = String(model || "").replace(/^qoder\//, "");
+  const qoderKey = QODER_UPSTREAM_KEY_ALIAS[rawKey] || rawKey;
+
   // Fetch model config from dynamic API instead of relying on static QODER_MODEL_MAP.
   // This allows support for new Qoder models (e.g., qmodel_latest) without code changes.
   let modelConfig = await getQoderModelConfig(credentials, qoderKey, { log, proxyOptions, signal });

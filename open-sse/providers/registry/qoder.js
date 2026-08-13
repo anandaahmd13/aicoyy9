@@ -26,7 +26,7 @@ export default {
     },
   },
   models: [
-    { id: "ultimate", name: "Ultimate" },
+    { id: "claude-opus-4-7", name: "Claude Opus 4.7" },
     { id: "auto", name: "Auto" },
     { id: "performance", name: "Performance" },
     { id: "efficient", name: "Efficient" },

@@ -540,10 +540,47 @@ export async function buildModelsList(kindFilter, options = {}) {
     }
   }
 
+  // Expose bare model aliases (e.g. "claude-opus-4-7" -> "qoder/claude-opus-4-7")
+  // as top-level model ids so clients can request the clean name without a
+  // provider prefix. The alias key becomes the client-facing id; its resolved
+  // provider must have an active connection (or DB be unavailable) and match the
+  // requested kind. The prefixed variant the alias masks is hidden below so the
+  // clean id replaces it rather than duplicating it.
+  const maskedByAlias = new Set();
+  for (const [aliasKey, target] of Object.entries(modelAliases || {})) {
+    if (typeof aliasKey !== "string" || !aliasKey.trim()) continue;
+    if (typeof target !== "string" || !target.includes("/")) continue;
+    const slash = target.indexOf("/");
+    const providerToken = target.slice(0, slash);
+    const targetModel = target.slice(slash + 1);
+    if (!targetModel) continue;
+    const providerId = resolveProviderId(providerToken) || providerToken;
+    if (connections.length > 0 && !activeConnectionByProvider.has(providerId)) continue;
+    if (connections.length > 0 && !providerMatchesKinds(providerId, kindFilter)) continue;
+
+    const kind = inferKindFromUnknownModelId(targetModel);
+    const allowAsLlm = kind === "imageToText" && kindFilter.includes(LLM_KIND);
+    if (!kindFilter.includes(kind) && !allowAsLlm) continue;
+
+    const providerAlias = getProviderAlias(providerId) || providerToken;
+    const entry = {
+      id: aliasKey,
+      object: "model",
+      owned_by: providerAlias,
+    };
+    const caps = kind === LLM_KIND ? getCapabilitiesForModel(providerId, targetModel) : null;
+    if (caps) entry.capabilities = caps;
+    models.push(entry);
+    // Hide the prefixed variant this alias masks (e.g. "qd/claude-opus-4-7").
+    maskedByAlias.add(`${providerAlias}/${targetModel}`);
+    maskedByAlias.add(`${providerId}/${targetModel}`);
+  }
+
   const dedupedModels = [];
   const seenModelIds = new Set();
   for (const model of models) {
     if (!model?.id || seenModelIds.has(model.id)) continue;
+    if (maskedByAlias.has(model.id)) continue;
     seenModelIds.add(model.id);
     dedupedModels.push(model);
   }
