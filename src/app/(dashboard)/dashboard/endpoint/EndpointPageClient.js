@@ -19,53 +19,82 @@ import Tooltip from "./components/Tooltip";
 import SecurityWarning from "./components/SecurityWarning";
 import { ID_TO_ALIAS } from "@/shared/constants/providers";
 
-// Group a /v1/models list ("alias/model" entries) into { [alias]: [modelId...] }.
+// Group a /v1/models list into { [alias]: [modelId...] }.
+// "alias/model" entries group by their prefix. Bare ids (masked model aliases
+// like "claude-opus-4-7", exposed without a provider prefix) group under their
+// owned_by — matching how filterModelsByScope/scopeDecision resolve them. Bare
+// combos (owned_by "combo") aren't provider-scopable, so they're skipped.
 function groupCatalog(models) {
   const out = {};
   for (const m of models || []) {
     const id = String(m.id || "");
+    if (!id) continue;
     const slash = id.indexOf("/");
-    if (slash < 0) continue; // skip bare combos
-    const alias = id.slice(0, slash);
-    const modelId = id.slice(slash + 1);
+    let alias, modelId;
+    if (slash >= 0) {
+      alias = id.slice(0, slash);
+      modelId = id.slice(slash + 1);
+    } else {
+      alias = m.owned_by;
+      modelId = id;
+      if (!alias || alias === "combo") continue;
+    }
     (out[alias] ||= []).push(modelId);
   }
   return out;
 }
 
-// UI scope value { [alias]: string[] } → API payload. Empty = unrestricted (null).
+// UI scope value { [alias]: { all, models } } → API payload { providers: { [alias]: string[] } }.
+// all mode → [] (backend treats empty = every model). custom with picks → those models.
+// custom with zero picks → provider omitted (narrowed to nothing = no access to it).
+// No providers → null (unrestricted key).
 function scopesToPayload(value) {
-  const providers = value || {};
+  const providers = {};
+  for (const [alias, sel] of Object.entries(value || {})) {
+    if (!sel) continue;
+    if (sel.all) {
+      providers[alias] = [];
+      continue;
+    }
+    const models = (sel.models || []).filter((m) => typeof m === "string" && m.trim());
+    if (models.length) providers[alias] = models;
+  }
   return Object.keys(providers).length ? { providers } : null;
 }
 
-// Stored scopes (id-keyed) → UI value (alias-keyed) for the edit modal.
+// Stored scopes (id-keyed { [id]: string[] }) → UI value (alias-keyed { [alias]: { all, models } }).
+// A stored empty array means "all models", so it maps to all-mode in the picker.
 function scopesToUiValue(scopes) {
   const providers = scopes?.providers;
   if (!providers) return {};
   const out = {};
   for (const [id, models] of Object.entries(providers)) {
-    out[ID_TO_ALIAS[id] || id] = Array.isArray(models) ? models : [];
+    const list = Array.isArray(models) ? models : [];
+    out[ID_TO_ALIAS[id] || id] = { all: list.length === 0, models: list };
   }
   return out;
 }
 
-// Provider/model access picker. value/onChange use { [alias]: string[] } shape;
-// a provider absent = not allowed, empty array = all its models allowed.
+// Provider/model access picker. value/onChange use { [alias]: { all, models } }:
+// provider absent = not allowed; { all:true } = every model; { all:false, models } =
+// only those models. Unchecking "All models" starts from an empty selection (the
+// user then ticks the specific models they want) rather than pre-filling all.
 function ScopePicker({ catalog, value, onChange }) {
   const aliases = Object.keys(catalog).sort();
   const toggleProvider = (alias, on) => {
     const next = { ...value };
-    if (on) next[alias] = [];
+    if (on) next[alias] = { all: true, models: [] };
     else delete next[alias];
     onChange(next);
   };
-  const toggleAll = (alias, on) => onChange({ ...value, [alias]: on ? [] : [...catalog[alias]] });
+  const toggleAll = (alias, on) =>
+    onChange({ ...value, [alias]: { all: on, models: [] } });
   const toggleModel = (alias, model, on) => {
-    const current = value[alias]?.length ? value[alias] : [...catalog[alias]];
-    const next = on ? [...new Set([...current, model])] : current.filter((m) => m !== model);
-    // If every model is selected, collapse back to [] (= all).
-    onChange({ ...value, [alias]: next.length === catalog[alias].length ? [] : next });
+    const current = value[alias]?.models || [];
+    const models = on
+      ? [...new Set([...current, model])]
+      : current.filter((m) => m !== model);
+    onChange({ ...value, [alias]: { all: false, models } });
   };
   return (
     <div className="flex flex-col gap-1.5">
@@ -73,9 +102,10 @@ function ScopePicker({ catalog, value, onChange }) {
       <div className="max-h-64 overflow-y-auto rounded-lg border border-border p-2 flex flex-col gap-1">
         {aliases.length === 0 && <div className="text-xs text-muted-foreground px-1">No models available</div>}
         {aliases.map((alias) => {
-          const selected = value[alias] !== undefined;
-          const allModels = !selected || value[alias].length === 0;
-          const chosen = new Set(allModels ? [] : value[alias]);
+          const sel = value[alias];
+          const selected = sel !== undefined;
+          const allModels = !!sel?.all;
+          const chosen = new Set(allModels ? [] : sel?.models || []);
           return (
             <div key={alias} className="flex flex-col">
               <label className="flex items-center gap-2 text-sm py-0.5 cursor-pointer">
@@ -209,7 +239,7 @@ export default function APIPageClient({ machineId }) {
 
   const fetchCatalog = async () => {
     try {
-      const res = await fetch("/v1/models");
+      const res = await fetch("/api/models/catalog");
       if (res.ok) {
         const data = await res.json();
         setModelCatalog(groupCatalog(data.data));
