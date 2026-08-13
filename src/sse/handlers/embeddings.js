@@ -4,6 +4,7 @@ import {
   clearAccountError,
   extractApiKey,
   isValidApiKey,
+  enforceApiKeyQuota,
 } from "../services/auth.js";
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo } from "../services/model.js";
@@ -63,6 +64,11 @@ export async function handleEmbeddings(request) {
       log.warn("AUTH", "Invalid API key (requireApiKey=true)");
       return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
     }
+  }
+
+  if (apiKey) {
+    const quota = await enforceApiKeyQuota(apiKey);
+    if (quota) return errorResponse(quota.status, quota.message);
   }
 
   if (!modelStr) {

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSettings, validateApiKey } from "@/lib/localDb";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
-import { verifyDashboardAuthToken } from "@/lib/auth/dashboardSession";
+import { verifyDashboardAuthToken, getDashboardAuthSession } from "@/lib/auth/dashboardSession";
 
 const CLI_TOKEN_HEADER = "x-9r-cli-token";
 const CLI_TOKEN_SALT = "9r-cli-auth";
@@ -85,6 +85,48 @@ const LOCAL_ONLY_PATHS = [
 ];
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+
+// Admin-only API prefixes: members get 403. Console-log stream lives under /api/translator.
+const ADMIN_ONLY_API = [
+  "/api/users",
+  "/api/providers",
+  "/api/provider-nodes",
+  "/api/proxy-pools",
+  "/api/combos",
+  "/api/media-providers",
+  "/api/pricing",
+  "/api/tags",
+  "/api/cli-tools",
+  "/api/mcp",
+  "/api/tunnel",
+  "/api/oauth",
+  "/api/cloud",
+  "/api/settings",
+  "/api/keys",
+  "/api/translator",
+];
+
+// Admin-only dashboard pages: members are redirected to /dashboard/usage.
+const ADMIN_ONLY_DASHBOARD = [
+  "/dashboard/providers",
+  "/dashboard/combos",
+  "/dashboard/proxy-pools",
+  "/dashboard/skills",
+  "/dashboard/cli-tools",
+  "/dashboard/token-saver",
+  "/dashboard/media-providers",
+  "/dashboard/profile",
+  "/dashboard/quota",
+  "/dashboard/endpoint",
+  "/dashboard/console-log",
+  "/dashboard/users",
+];
+
+async function getSessionRole(request) {
+  const token = request.cookies.get("auth_token")?.value;
+  const session = await getDashboardAuthSession(token);
+  return session?.role || null;
+}
 
 function isLoopbackHostname(h) {
   if (!h) return false;
@@ -205,8 +247,17 @@ export async function proxy(request) {
   // Deny-by-default for /api/* — public allow-list bypasses, everything else requires auth.
   if (pathname.startsWith("/api/")) {
     if (isPublicApi(pathname)) return NextResponse.next();
-    if (await hasValidCliToken(request) || await isAuthenticated(request))
+    // CLI token bypasses role checks entirely (local trusted caller).
+    if (await hasValidCliToken(request)) return NextResponse.next();
+    if (await isAuthenticated(request)) {
+      // Role enforcement: null role (e.g. requireLogin=false local mode, or legacy
+      // pre-role cookie) is treated as admin. Members are blocked from admin-only APIs.
+      const role = await getSessionRole(request);
+      if (role === "member" && ADMIN_ONLY_API.some((p) => pathname === p || pathname.startsWith(`${p}/`))) {
+        return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      }
       return NextResponse.next();
+    }
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -242,6 +293,12 @@ export async function proxy(request) {
     const token = request.cookies.get("auth_token")?.value;
     if (token) {
       if (await verifyDashboardAuthToken(token)) {
+        const role = await getSessionRole(request);
+        // Members never land on /dashboard root (it renders the admin-only
+        // Endpoint/API-key page) nor any admin-only page → send to Usage.
+        if (role === "member" && (pathname === "/dashboard" || ADMIN_ONLY_DASHBOARD.some((p) => pathname === p || pathname.startsWith(`${p}/`)))) {
+          return NextResponse.redirect(new URL("/dashboard/usage", request.url));
+        }
         return NextResponse.next();
       } else {
         return NextResponse.redirect(new URL("/login", request.url));

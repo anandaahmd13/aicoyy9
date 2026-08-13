@@ -17,11 +17,114 @@ import EndpointRow from "./components/EndpointRow";
 import StatusAlert from "./components/StatusAlert";
 import Tooltip from "./components/Tooltip";
 import SecurityWarning from "./components/SecurityWarning";
+import { ID_TO_ALIAS } from "@/shared/constants/providers";
+
+// Group a /v1/models list ("alias/model" entries) into { [alias]: [modelId...] }.
+function groupCatalog(models) {
+  const out = {};
+  for (const m of models || []) {
+    const id = String(m.id || "");
+    const slash = id.indexOf("/");
+    if (slash < 0) continue; // skip bare combos
+    const alias = id.slice(0, slash);
+    const modelId = id.slice(slash + 1);
+    (out[alias] ||= []).push(modelId);
+  }
+  return out;
+}
+
+// UI scope value { [alias]: string[] } → API payload. Empty = unrestricted (null).
+function scopesToPayload(value) {
+  const providers = value || {};
+  return Object.keys(providers).length ? { providers } : null;
+}
+
+// Stored scopes (id-keyed) → UI value (alias-keyed) for the edit modal.
+function scopesToUiValue(scopes) {
+  const providers = scopes?.providers;
+  if (!providers) return {};
+  const out = {};
+  for (const [id, models] of Object.entries(providers)) {
+    out[ID_TO_ALIAS[id] || id] = Array.isArray(models) ? models : [];
+  }
+  return out;
+}
+
+// Provider/model access picker. value/onChange use { [alias]: string[] } shape;
+// a provider absent = not allowed, empty array = all its models allowed.
+function ScopePicker({ catalog, value, onChange }) {
+  const aliases = Object.keys(catalog).sort();
+  const toggleProvider = (alias, on) => {
+    const next = { ...value };
+    if (on) next[alias] = [];
+    else delete next[alias];
+    onChange(next);
+  };
+  const toggleAll = (alias, on) => onChange({ ...value, [alias]: on ? [] : [...catalog[alias]] });
+  const toggleModel = (alias, model, on) => {
+    const current = value[alias]?.length ? value[alias] : [...catalog[alias]];
+    const next = on ? [...new Set([...current, model])] : current.filter((m) => m !== model);
+    // If every model is selected, collapse back to [] (= all).
+    onChange({ ...value, [alias]: next.length === catalog[alias].length ? [] : next });
+  };
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label className="text-sm font-medium">Access (blank = all providers &amp; models)</label>
+      <div className="max-h-64 overflow-y-auto rounded-lg border border-border p-2 flex flex-col gap-1">
+        {aliases.length === 0 && <div className="text-xs text-muted-foreground px-1">No models available</div>}
+        {aliases.map((alias) => {
+          const selected = value[alias] !== undefined;
+          const allModels = !selected || value[alias].length === 0;
+          const chosen = new Set(allModels ? [] : value[alias]);
+          return (
+            <div key={alias} className="flex flex-col">
+              <label className="flex items-center gap-2 text-sm py-0.5 cursor-pointer">
+                <input type="checkbox" checked={selected} onChange={(e) => toggleProvider(alias, e.target.checked)} />
+                <span className="font-medium">{alias}</span>
+              </label>
+              {selected && (
+                <div className="ml-6 flex flex-col gap-0.5 mt-0.5">
+                  <label className="flex items-center gap-2 text-xs cursor-pointer">
+                    <input type="checkbox" checked={allModels} onChange={(e) => toggleAll(alias, e.target.checked)} />
+                    <span>All models</span>
+                  </label>
+                  {catalog[alias].map((model) => (
+                    <label key={model} className="flex items-center gap-2 text-xs cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={allModels || chosen.has(model)}
+                        onChange={(e) => toggleModel(alias, model, e.target.checked)}
+                      />
+                      <span>{model}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+ScopePicker.propTypes = {
+  catalog: PropTypes.object.isRequired,
+  value: PropTypes.object.isRequired,
+  onChange: PropTypes.func.isRequired,
+};
+
 export default function APIPageClient({ machineId }) {
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
+  const [newKeyOwner, setNewKeyOwner] = useState("");
+  const [newKeyLimit, setNewKeyLimit] = useState("");
+  const [newKeyExpiry, setNewKeyExpiry] = useState("");
+  const [newKeyScopes, setNewKeyScopes] = useState({}); // { [alias]: string[] }
+  const [modelCatalog, setModelCatalog] = useState({}); // { [alias]: string[] }
+  const [users, setUsers] = useState([]);
+  const [editKey, setEditKey] = useState(null); // { id, ownerUserId, tokenLimit, expiresAt }
   const [createdKey, setCreatedKey] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
 
@@ -100,7 +203,29 @@ export default function APIPageClient({ machineId }) {
   useEffect(() => {
     fetchData();
     loadSettings();
+    fetchUsers();
+    fetchCatalog();
   }, []);
+
+  const fetchCatalog = async () => {
+    try {
+      const res = await fetch("/v1/models");
+      if (res.ok) {
+        const data = await res.json();
+        setModelCatalog(groupCatalog(data.data));
+      }
+    } catch { /* catalog optional */ }
+  };
+
+  const fetchUsers = async () => {
+    try {
+      const res = await fetch("/api/users");
+      if (res.ok) {
+        const data = await res.json();
+        setUsers(data.users || []);
+      }
+    } catch { /* non-admin or error → no owner options */ }
+  };
 
   // Status poll: only while degraded (not yet reachable). Stop once healthy to avoid spam.
   // Visibility re-check: refresh once when tab becomes visible.
@@ -629,7 +754,13 @@ export default function APIPageClient({ machineId }) {
       const res = await fetch("/api/keys", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newKeyName }),
+        body: JSON.stringify({
+          name: newKeyName,
+          ownerUserId: newKeyOwner || null,
+          tokenLimit: newKeyLimit !== "" ? Number(newKeyLimit) : null,
+          expiresAt: newKeyExpiry ? new Date(newKeyExpiry).toISOString() : null,
+          scopes: scopesToPayload(newKeyScopes),
+        }),
       });
       const data = await res.json();
 
@@ -637,10 +768,36 @@ export default function APIPageClient({ machineId }) {
         setCreatedKey(data.key);
         await fetchData();
         setNewKeyName("");
+        setNewKeyOwner("");
+        setNewKeyLimit("");
+        setNewKeyExpiry("");
+        setNewKeyScopes({});
         setShowAddModal(false);
       }
     } catch (error) {
       console.log("Error creating key:", error);
+    }
+  };
+
+  const handleSaveKeyEdit = async () => {
+    if (!editKey) return;
+    try {
+      const res = await fetch(`/api/keys/${editKey.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ownerUserId: editKey.ownerUserId || null,
+          tokenLimit: editKey.tokenLimit !== "" && editKey.tokenLimit != null ? Number(editKey.tokenLimit) : null,
+          expiresAt: editKey.expiresAt ? new Date(editKey.expiresAt).toISOString() : null,
+          scopes: scopesToPayload(editKey.scopes || {}),
+        }),
+      });
+      if (res.ok) {
+        await fetchData();
+        setEditKey(null);
+      }
+    } catch (error) {
+      console.log("Error updating key:", error);
     }
   };
 
@@ -1039,11 +1196,39 @@ export default function APIPageClient({ machineId }) {
                   <p className="text-xs text-text-muted mt-1">
                     Created {new Date(key.createdAt).toLocaleDateString()}
                   </p>
+                  {(key.ownerUserId || key.tokenLimit != null || key.expiresAt) && (
+                    <div className="flex flex-wrap items-center gap-2 mt-1 text-xs">
+                      {key.ownerUserId && (
+                        <span className="px-1.5 py-0.5 rounded bg-primary/10 text-primary">
+                          {users.find((u) => u.id === key.ownerUserId)?.username || "member"}
+                        </span>
+                      )}
+                      {key.tokenLimit != null ? (
+                        <span className="text-text-muted">
+                          {(key.tokensUsed || 0).toLocaleString()} / {key.tokenLimit.toLocaleString()} tokens
+                        </span>
+                      ) : (
+                        <span className="text-text-muted">Unlimited tokens</span>
+                      )}
+                      {key.expiresAt && (
+                        <span className={new Date(key.expiresAt) < new Date() ? "text-red-500" : "text-text-muted"}>
+                          {new Date(key.expiresAt) < new Date() ? "Expired" : `Expires ${new Date(key.expiresAt).toLocaleDateString()}`}
+                        </span>
+                      )}
+                    </div>
+                  )}
                   {key.isActive === false && (
                     <p className="text-xs text-orange-500 mt-1">Paused</p>
                   )}
                 </div>
                 <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setEditKey({ id: key.id, ownerUserId: key.ownerUserId || "", tokenLimit: key.tokenLimit ?? "", expiresAt: key.expiresAt ? key.expiresAt.slice(0, 10) : "", scopes: scopesToUiValue(key.scopes) })}
+                    className="p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded text-text-muted hover:text-primary transition-all"
+                    title="Edit quota"
+                  >
+                    <span className="material-symbols-outlined text-[18px]">tune</span>
+                  </button>
                   <Toggle
                     size="sm"
                     checked={key.isActive ?? true}
@@ -1092,6 +1277,33 @@ export default function APIPageClient({ machineId }) {
             onChange={(e) => setNewKeyName(e.target.value)}
             placeholder="Production Key"
           />
+          <div className="flex flex-col gap-1.5">
+            <label className="text-sm font-medium">Owner (member)</label>
+            <select
+              value={newKeyOwner}
+              onChange={(e) => setNewKeyOwner(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg border border-border bg-input text-sm"
+            >
+              <option value="">None (admin / unlimited)</option>
+              {users.map((u) => (
+                <option key={u.id} value={u.id}>{u.username}</option>
+              ))}
+            </select>
+          </div>
+          <Input
+            label="Token limit (blank = unlimited)"
+            type="number"
+            value={newKeyLimit}
+            onChange={(e) => setNewKeyLimit(e.target.value)}
+            placeholder="e.g. 1000000"
+          />
+          <Input
+            label="Expires at (blank = never)"
+            type="date"
+            value={newKeyExpiry}
+            onChange={(e) => setNewKeyExpiry(e.target.value)}
+          />
+          <ScopePicker catalog={modelCatalog} value={newKeyScopes} onChange={setNewKeyScopes} />
           <div className="flex gap-2">
             <Button onClick={handleCreateKey} fullWidth disabled={!newKeyName.trim()}>
               Create
@@ -1100,6 +1312,10 @@ export default function APIPageClient({ machineId }) {
               onClick={() => {
                 setShowAddModal(false);
                 setNewKeyName("");
+                setNewKeyOwner("");
+                setNewKeyLimit("");
+                setNewKeyExpiry("");
+                setNewKeyScopes({});
               }}
               variant="ghost"
               fullWidth
@@ -1108,6 +1324,53 @@ export default function APIPageClient({ machineId }) {
             </Button>
           </div>
         </div>
+      </Modal>
+
+      {/* Edit Key Modal */}
+      <Modal
+        isOpen={!!editKey}
+        title="Edit API Key"
+        onClose={() => setEditKey(null)}
+      >
+        {editKey && (
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium">Owner (member)</label>
+              <select
+                value={editKey.ownerUserId}
+                onChange={(e) => setEditKey({ ...editKey, ownerUserId: e.target.value })}
+                className="w-full px-3 py-2 rounded-lg border border-border bg-input text-sm"
+              >
+                <option value="">None (admin / unlimited)</option>
+                {users.map((u) => (
+                  <option key={u.id} value={u.id}>{u.username}</option>
+                ))}
+              </select>
+            </div>
+            <Input
+              label="Token limit (blank = unlimited)"
+              type="number"
+              value={editKey.tokenLimit}
+              onChange={(e) => setEditKey({ ...editKey, tokenLimit: e.target.value })}
+              placeholder="e.g. 1000000"
+            />
+            <Input
+              label="Expires at (blank = never)"
+              type="date"
+              value={editKey.expiresAt}
+              onChange={(e) => setEditKey({ ...editKey, expiresAt: e.target.value })}
+            />
+            <ScopePicker
+              catalog={modelCatalog}
+              value={editKey.scopes || {}}
+              onChange={(next) => setEditKey({ ...editKey, scopes: next })}
+            />
+            <div className="flex gap-2">
+              <Button onClick={handleSaveKeyEdit} fullWidth>Save</Button>
+              <Button onClick={() => setEditKey(null)} variant="ghost" fullWidth>Cancel</Button>
+            </div>
+          </div>
+        )}
       </Modal>
 
       {/* Created Key Modal */}

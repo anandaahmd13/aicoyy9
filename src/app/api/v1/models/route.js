@@ -18,6 +18,37 @@ import { resolveZedModels } from "open-sse/shared/zedAuth.js";
 import { updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { capabilitiesFromServiceKind, getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
+import { checkApiKey } from "@/lib/db/repos/apiKeysRepo.js";
+import { extractApiKey } from "@/sse/services/auth.js";
+import { resolveProviderId } from "@/shared/constants/providers.js";
+import { normalizeModelId } from "open-sse/providers/models/schema.js";
+
+// Filter a built models list down to a key's provider/model scope.
+// scopes null → unchanged. Combos (owned_by "combo") and custom models pass through.
+// An entry id is "alias/model"; alias resolves to a provider id compared against scopes.
+export function filterModelsByScope(models, scopes) {
+  const providers = scopes?.providers;
+  if (!providers) return models;
+  return models.filter((m) => {
+    const alias = m.owned_by;
+    if (!alias || alias === "combo") return true;
+    const providerId = resolveProviderId(alias) || alias;
+    const allowed = providers[providerId] ?? providers[alias];
+    if (allowed === undefined) return false;
+    if (!Array.isArray(allowed) || allowed.length === 0) return true;
+    const slash = String(m.id).indexOf("/");
+    const modelId = slash >= 0 ? m.id.slice(slash + 1) : m.id;
+    const want = normalizeModelId(modelId);
+    return allowed.some((a) => normalizeModelId(a) === want);
+  });
+}
+
+export async function scopesForRequest(request) {
+  const apiKey = extractApiKey(request);
+  if (!apiKey) return null;
+  const status = await checkApiKey(apiKey);
+  return status?.scopes ?? null;
+}
 
 // Per-provider live model resolvers. Each receives a connection record and
 // returns { models: [{ id, name? }, ...] } | null on failure.
@@ -542,7 +573,8 @@ export async function GET(request) {
     // Detect cross-instance recursive /models fetch (another 9router fetching our /models)
     const skipDynamicFetch = request?.headers?.get(INTERNAL_MODELS_FETCH_HEADER) === "1";
     const data = await buildModelsList([LLM_KIND], { skipDynamicFetch });
-    return Response.json({ object: "list", data }, {
+    const scopes = await scopesForRequest(request);
+    return Response.json({ object: "list", data: filterModelsByScope(data, scopes) }, {
       headers: { "Access-Control-Allow-Origin": "*" },
     });
   } catch (error) {

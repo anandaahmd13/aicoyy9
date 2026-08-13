@@ -9,6 +9,15 @@ function maskApiKey(key) {
   return key.slice(0, 8) + "***";
 }
 
+// Build an apiKey scope filter. Presence of an array (even empty) means "restrict":
+// an empty list matches nothing (member with no keys sees no data — no leak).
+// Pass undefined/null for no restriction (admin/full).
+function scopeClause(keys) {
+  if (!Array.isArray(keys)) return { active: false, sql: "", params: [] };
+  if (keys.length === 0) return { active: true, sql: " AND 0=1", params: [] };
+  return { active: true, sql: ` AND apiKey IN (${keys.map(() => "?").join(",")})`, params: [...keys] };
+}
+
 const PENDING_TIMEOUT_MS = 60 * 1000;
 const RING_CAP = 50;
 const CONN_CACHE_TTL_MS = 30 * 1000;
@@ -301,6 +310,14 @@ export async function saveRequestUsage(entry) {
       const cur = db.get(`SELECT value FROM _meta WHERE key = 'totalRequestsLifetime'`);
       const next = (cur ? parseInt(cur.value, 10) : 0) + 1;
       db.run(`INSERT INTO _meta(key, value) VALUES('totalRequestsLifetime', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [String(next)]);
+
+      // Per-key quota consumption (skips unlimited/admin keys via tokenLimit IS NOT NULL).
+      if (entry.apiKey) {
+        db.run(
+          `UPDATE apiKeys SET tokensUsed = tokensUsed + ? WHERE key = ? AND tokenLimit IS NOT NULL`,
+          [promptTokens + completionTokens, entry.apiKey]
+        );
+      }
       inserted = true;
     });
 
@@ -322,6 +339,10 @@ export async function getUsageHistory(filter = {}) {
   if (filter.model) { conds.push("model = ?"); params.push(filter.model); }
   if (filter.startDate) { conds.push("timestamp >= ?"); params.push(new Date(filter.startDate).toISOString()); }
   if (filter.endDate) { conds.push("timestamp <= ?"); params.push(new Date(filter.endDate).toISOString()); }
+  if (Array.isArray(filter.apiKeys)) {
+    if (filter.apiKeys.length === 0) { conds.push("0=1"); }
+    else { conds.push(`apiKey IN (${filter.apiKeys.map(() => "?").join(",")})`); params.push(...filter.apiKeys); }
+  }
 
   const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
   const rows = db.all(`SELECT timestamp, provider, model, connectionId, apiKey, endpoint, cost, status, tokens FROM usageHistory ${where} ORDER BY id ASC`, params);
@@ -343,8 +364,11 @@ function loadDaysInRange(adapter, maxDays) {
   return adapter.all(`SELECT dateKey, data FROM usageDaily WHERE dateKey >= ?`, [cutoffKey]);
 }
 
-export async function getUsageStats(period = "all") {
+export async function getUsageStats(period = "all", { scopeKeys } = {}) {
   const db = await getAdapter();
+  const scope = scopeClause(scopeKeys);
+  const scoped = scope.active;
+  const scopeSql = scope.sql;
 
   const [{ getProviderConnections }, { getApiKeys }, { getProviderNodes }] = await Promise.all([
     import("./connectionsRepo.js"),
@@ -369,7 +393,10 @@ export async function getUsageStats(period = "all") {
   for (const k of allApiKeys) apiKeyMap[k.key] = { name: k.name, id: k.id, createdAt: k.createdAt };
 
   // recentRequests from live history (last 100 entries enough for 20 deduped)
-  const recentRows = db.all(`SELECT timestamp, provider, model, tokens, status FROM usageHistory ORDER BY id DESC LIMIT 100`);
+  const recentRows = db.all(
+    `SELECT timestamp, provider, model, tokens, status FROM usageHistory ${scoped ? `WHERE 1=1${scopeSql}` : ""} ORDER BY id DESC LIMIT 100`,
+    scoped ? [...scope.params] : []
+  );
   const seen = new Set();
   const recentRequests = recentRows
     .map((r) => {
@@ -429,8 +456,8 @@ export async function getUsageStats(period = "all") {
     stats.last10Minutes.push(bucketMap[ts]);
   }
   const recent10 = db.all(
-    `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ? AND timestamp <= ?`,
-    [tenMinutesAgo.toISOString(), now.toISOString()]
+    `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ? AND timestamp <= ?${scopeSql}`,
+    [tenMinutesAgo.toISOString(), now.toISOString(), ...scope.params]
   );
   for (const r of recent10) {
     const tt = new Date(r.timestamp).getTime();
@@ -443,7 +470,9 @@ export async function getUsageStats(period = "all") {
     }
   }
 
-  const useDailySummary = period !== "24h" && period !== "today";
+  // When scoped to specific keys, the per-day aggregate isn't stored per-owner,
+  // so always compute from live usageHistory filtered by apiKey (full scan; members have little data).
+  const useDailySummary = !scoped && period !== "24h" && period !== "today";
 
   if (useDailySummary) {
     const periodDays = { "7d": 7, "30d": 30, "60d": 60 };
@@ -564,18 +593,23 @@ export async function getUsageStats(period = "all") {
       if (stats.byEndpoint[endpointKey] && new Date(ts) > new Date(stats.byEndpoint[endpointKey].lastUsed)) stats.byEndpoint[endpointKey].lastUsed = ts;
     }
   } else {
-    // 24h / today: live history
+    // 24h / today / (scoped: any period) — compute from live history
     let cutoff;
     if (period === "today") {
       const startOfDay = new Date();
       startOfDay.setHours(0, 0, 0, 0);
       cutoff = startOfDay.toISOString();
-    } else {
+    } else if (period === "24h") {
       cutoff = new Date(Date.now() - PERIOD_MS["24h"]).toISOString();
+    } else if (scoped && PERIOD_MS[period]) {
+      cutoff = new Date(Date.now() - PERIOD_MS[period]).toISOString();
+    } else {
+      // scoped "all" (or unknown) → no lower bound
+      cutoff = new Date(0).toISOString();
     }
     const filtered = db.all(
-      `SELECT timestamp, provider, model, connectionId, apiKey, endpoint, promptTokens, completionTokens, cost, tokens FROM usageHistory WHERE timestamp >= ?`,
-      [cutoff]
+      `SELECT timestamp, provider, model, connectionId, apiKey, endpoint, promptTokens, completionTokens, cost, tokens FROM usageHistory WHERE timestamp >= ?${scopeSql}`,
+      [cutoff, ...scope.params]
     );
 
     for (const r of filtered) {
@@ -658,9 +692,12 @@ export async function getUsageStats(period = "all") {
   return stats;
 }
 
-export async function getChartData(period = "7d") {
+export async function getChartData(period = "7d", { scopeKeys } = {}) {
   const db = await getAdapter();
   const now = Date.now();
+  const scope = scopeClause(scopeKeys);
+  const scoped = scope.active;
+  const scopeSql = scope.sql;
 
   if (period === "today") {
     const bucketCount = 24;
@@ -673,8 +710,8 @@ export async function getChartData(period = "7d") {
     const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0 }));
 
     const rows = db.all(
-      `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ?`,
-      [new Date(startTime).toISOString()]
+      `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ?${scopeSql}`,
+      [new Date(startTime).toISOString(), ...scope.params]
     );
     for (const r of rows) {
       const t = new Date(r.timestamp).getTime();
@@ -696,8 +733,8 @@ export async function getChartData(period = "7d") {
     const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0 }));
 
     const rows = db.all(
-      `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ?`,
-      [new Date(startTime).toISOString()]
+      `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ?${scopeSql}`,
+      [new Date(startTime).toISOString(), ...scope.params]
     );
     for (const r of rows) {
       const t = new Date(r.timestamp).getTime();
@@ -713,10 +750,26 @@ export async function getChartData(period = "7d") {
   const today = new Date();
   const labelFn = (d) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
-  // Build map of dateKey → day data
-  const dayRows = loadDaysInRange(db, bucketCount);
+  // Scoped (member): usageDaily isn't stored per-owner, so bucket from live history by day.
   const dayMap = {};
-  for (const r of dayRows) dayMap[r.dateKey] = parseJson(r.data, {});
+  if (scoped) {
+    const cutoff = new Date(today.getFullYear(), today.getMonth(), today.getDate() - bucketCount + 1);
+    const rows = db.all(
+      `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ?${scopeSql}`,
+      [cutoff.toISOString(), ...scope.params]
+    );
+    for (const r of rows) {
+      const d = new Date(r.timestamp);
+      const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      if (!dayMap[dateKey]) dayMap[dateKey] = { promptTokens: 0, completionTokens: 0, cost: 0 };
+      dayMap[dateKey].promptTokens += r.promptTokens || 0;
+      dayMap[dateKey].completionTokens += r.completionTokens || 0;
+      dayMap[dateKey].cost += r.cost || 0;
+    }
+  } else {
+    const dayRows = loadDaysInRange(db, bucketCount);
+    for (const r of dayRows) dayMap[r.dateKey] = parseJson(r.data, {});
+  }
 
   return Array.from({ length: bucketCount }, (_, i) => {
     const d = new Date(today);
@@ -739,12 +792,14 @@ function formatLogDate(date = new Date()) {
 // No-op: request log is now derived from usageHistory table on read.
 export async function appendRequestLog() {}
 
-export async function getRecentLogs(limit = 200) {
+export async function getRecentLogs(limit = 200, { apiKeys } = {}) {
   try {
     const db = await getAdapter();
+    const scope = scopeClause(apiKeys);
+    const where = scope.active ? `WHERE 1=1${scope.sql}` : "";
     const rows = db.all(
-      `SELECT timestamp, provider, model, connectionId, promptTokens, completionTokens, status, tokens FROM usageHistory ORDER BY id DESC LIMIT ?`,
-      [limit],
+      `SELECT timestamp, provider, model, connectionId, apiKey, promptTokens, completionTokens, status, tokens FROM usageHistory ${where} ORDER BY id DESC LIMIT ?`,
+      [...scope.params, limit],
     );
     if (!rows.length) return [];
 

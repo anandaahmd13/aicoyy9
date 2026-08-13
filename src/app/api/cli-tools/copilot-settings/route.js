@@ -30,14 +30,15 @@ const readConfig = async () => {
   }
 };
 
+const ENTRY_NAMES = ["aicoyy", "9Router"];
 const has9RouterConfig = (config) => {
   if (!Array.isArray(config)) return false;
-  return config.some((entry) => entry.name === "9Router");
+  return config.some((entry) => ENTRY_NAMES.includes(entry.name));
 };
 
 const get9RouterEntry = (config) => {
   if (!Array.isArray(config)) return null;
-  return config.find((entry) => entry.name === "9Router") || null;
+  return config.find((entry) => ENTRY_NAMES.includes(entry.name)) || null;
 };
 
 // GET - Read current copilot config
@@ -81,10 +82,10 @@ export async function POST(request) {
     } catch { /* No existing config */ }
 
     const endpointUrl = `${baseUrl}/chat/completions#models.ai.azure.com`;
-    const keyToUse = apiKey || "sk_9router";
+    const keyToUse = apiKey || "sk_aicoyy";
 
     const newEntry = {
-      name: "9Router",
+      name: "aicoyy",
       vendor: "azure",
       apiKey: keyToUse,
       models: models.map((id) => ({
@@ -98,13 +99,9 @@ export async function POST(request) {
       })),
     };
 
-    // Replace existing 9Router entry or append
-    const idx = config.findIndex((e) => e.name === "9Router");
-    if (idx >= 0) {
-      config[idx] = newEntry;
-    } else {
-      config.push(newEntry);
-    }
+    // Drop any prior entry (old or new name), then append the fresh one.
+    config = config.filter((e) => !ENTRY_NAMES.includes(e.name));
+    config.push(newEntry);
 
     await fs.writeFile(configPath, JSON.stringify(config, null, 2));
 
@@ -136,12 +133,12 @@ export async function DELETE() {
       throw error;
     }
 
-    config = config.filter((e) => e.name !== "9Router");
+    config = config.filter((e) => !ENTRY_NAMES.includes(e.name));
     await fs.writeFile(configPath, JSON.stringify(config, null, 2));
 
     return NextResponse.json({
       success: true,
-      message: "9Router removed from Copilot config",
+      message: "aicoyy removed from Copilot config",
     });
   } catch (error) {
     console.log("Error resetting copilot settings:", error);

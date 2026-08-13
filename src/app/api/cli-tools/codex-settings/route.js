@@ -76,7 +76,8 @@ const readConfig = async () => {
 // Check if config has 9Router settings
 const has9RouterConfig = (config) => {
   if (!config) return false;
-  return config.includes("model_provider = \"9router\"") || config.includes("[model_providers.9router]");
+  return config.includes("model_provider = \"aicoyy\"") || config.includes("[model_providers.aicoyy]")
+    || config.includes("model_provider = \"9router\"") || config.includes("[model_providers.9router]");
 };
 
 // GET - Check codex CLI and read current settings
@@ -128,15 +129,17 @@ export async function POST(request) {
       parsed = parsedToWritable(parseTOML(existingConfig));
     } catch { /* No existing config */ }
 
-    // Update only 9Router related fields (api_key goes to auth.json, not config.toml)
+    // Update only aicoyy related fields (api_key goes to auth.json, not config.toml)
     parsed.model = model;
-    parsed.model_provider = "9router";
+    parsed.model_provider = "aicoyy";
 
-    // Update or create 9router provider section (no api_key - Codex reads from auth.json)
+    // Update or create aicoyy provider section (no api_key - Codex reads from auth.json)
     // Ensure /v1 suffix is added only once
     const normalizedBaseUrl = baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`;
-    setNestedSection(parsed, "model_providers.9router", {
-      name: "9Router",
+    // Strip any stale legacy-named provider section before writing fresh.
+    deleteNestedSection(parsed, "model_providers.9router");
+    setNestedSection(parsed, "model_providers.aicoyy", {
+      name: "aicoyy",
       base_url: normalizedBaseUrl,
       wire_api: "responses",
     });
@@ -195,13 +198,14 @@ export async function DELETE() {
       throw error;
     }
 
-    // Remove 9Router related root fields only if they point to 9router
-    if (parsed.model_provider === "9router") {
+    // Remove aicoyy/legacy related root fields only if they point to our provider
+    if (parsed.model_provider === "aicoyy" || parsed.model_provider === "9router") {
       delete parsed.model;
       delete parsed.model_provider;
     }
 
-    // Remove 9router provider section
+    // Remove aicoyy + legacy provider sections
+    deleteNestedSection(parsed, "model_providers.aicoyy");
     deleteNestedSection(parsed, "model_providers.9router");
 
     // Remove subagent configuration

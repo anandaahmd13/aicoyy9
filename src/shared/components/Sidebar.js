@@ -39,6 +39,13 @@ const systemItems = [
   { href: "/dashboard/skills", label: "Skills", icon: "extension" },
 ];
 
+// Member sees a minimal, leak-safe nav (own usage + own keys + own logs).
+const memberItems = [
+  { href: "/dashboard/usage", label: "Usage", icon: "bar_chart" },
+  { href: "/dashboard/my-key", label: "My API Key", icon: "key" },
+  { href: "/dashboard/my-logs", label: "My Logs", icon: "receipt_long" },
+];
+
 export default function Sidebar({ onClose }) {
   const pathname = usePathname();
   const [mediaOpen, setMediaOpen] = useState(false);
@@ -49,6 +56,7 @@ export default function Sidebar({ onClose }) {
   const [isUpdating, setIsUpdating] = useState(false);
   const [shutdownCountdown, setShutdownCountdown] = useState(0);
   const [enableTranslator, setEnableTranslator] = useState(false);
+  const [role, setRole] = useState(null);
   const { copied, copy } = useCopyToClipboard(2000);
 
   const INSTALL_CMD = UPDATER_CONFIG.installCmdLatest;
@@ -57,6 +65,13 @@ export default function Sidebar({ onClose }) {
     fetch("/api/settings")
       .then(res => res.json())
       .then(data => { if (data.enableTranslator) setEnableTranslator(true); })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    fetch("/api/auth/status")
+      .then(res => res.json())
+      .then(data => setRole(data.role || null))
       .catch(() => {});
   }, []);
 
@@ -158,6 +173,32 @@ export default function Sidebar({ onClose }) {
 
         {/* Navigation */}
         <nav className="flex-1 px-4 py-2 space-y-0.5 overflow-y-auto custom-scrollbar">
+          {role === "member" ? (
+            memberItems.map((item) => (
+              <Link
+                key={item.href}
+                href={item.href}
+                onClick={onClose}
+                className={cn(
+                  "flex items-center gap-3 px-3 py-1 rounded-lg transition-all group",
+                  isActive(item.href)
+                    ? "bg-primary/10 text-primary"
+                    : "text-text-muted hover:bg-surface-2 hover:text-text-main"
+                )}
+              >
+                <span
+                  className={cn(
+                    "material-symbols-outlined text-[18px]",
+                    isActive(item.href) ? "fill-1" : "group-hover:text-primary transition-colors"
+                  )}
+                >
+                  {item.icon}
+                </span>
+                <span className="text-[13px] font-medium">{item.label}</span>
+              </Link>
+            ))
+          ) : (
+          <>
           {navItems.map((item) => (
             <Link
               key={item.href}
@@ -263,6 +304,28 @@ export default function Sidebar({ onClose }) {
               </Link>
             ))}
 
+            {/* Users management (admin) */}
+            <Link
+              href="/dashboard/users"
+              onClick={onClose}
+              className={cn(
+                "flex items-center gap-3 px-3 py-1 rounded-lg transition-all group",
+                isActive("/dashboard/users")
+                  ? "bg-primary/10 text-primary"
+                  : "text-text-muted hover:bg-surface-2 hover:text-text-main"
+              )}
+            >
+              <span
+                className={cn(
+                  "material-symbols-outlined text-[18px]",
+                  isActive("/dashboard/users") ? "fill-1" : "group-hover:text-primary transition-colors"
+                )}
+              >
+                group
+              </span>
+              <span className="text-[13px] font-medium">Users</span>
+            </Link>
+
             {/* Debug items (inside System section, before Settings) */}
             {debugItems.map((item) => {
               const show = item.href !== "/dashboard/translator" || enableTranslator;
@@ -344,6 +407,8 @@ export default function Sidebar({ onClose }) {
               <span className="text-[13px] font-medium">Settings</span>
             </Link>
           </div>
+          </>
+          )}
         </nav>
 
       </aside>
@@ -356,7 +421,7 @@ export default function Sidebar({ onClose }) {
         isOpen={showUpdateModal}
         onClose={() => setShowUpdateModal(false)}
         onConfirm={handleUpdate}
-        title="Update 9Router"
+        title="Update aicoyy"
         message={`Show install command for v${updateInfo?.latestVersion || ""}? You can copy it and shutdown to install manually.`}
         confirmText="Show Command"
         cancelText="Cancel"
@@ -407,7 +472,7 @@ function ManualUpdatePanel({ latestVersion, installCmd, copied, onCopyAndShutdow
           <span className="material-symbols-outlined text-[24px]">content_copy</span>
         </div>
         <div>
-          <h2 className="text-lg font-semibold">Update 9Router{latestVersion ? ` to v${latestVersion}` : ""}</h2>
+          <h2 className="text-lg font-semibold">Update aicoyy{latestVersion ? ` to v${latestVersion}` : ""}</h2>
           <p className="text-xs text-white/60">
             {isDisconnected
               ? "Server stopped. Paste the command into a terminal to install."
@@ -426,7 +491,7 @@ function ManualUpdatePanel({ latestVersion, installCmd, copied, onCopyAndShutdow
       <ol className="text-xs text-white/70 space-y-1 list-decimal list-inside mb-4">
         <li>Click <strong>Copy & Shutdown</strong> below.</li>
         <li>Paste the command into your terminal and press Enter.</li>
-        <li>Run <code className="px-1 rounded bg-white/10 text-green-400">9router</code> again after install.</li>
+        <li>Run <code className="px-1 rounded bg-white/10 text-green-400">aicoyy</code> again after install.</li>
       </ol>
 
       {isDisconnected ? (

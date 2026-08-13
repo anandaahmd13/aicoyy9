@@ -6,6 +6,8 @@ import {
   clearAccountError,
   extractApiKey,
   isValidApiKey,
+  enforceApiKeyQuota,
+  enforceApiKeyScope,
 } from "../services/auth.js";
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo, getComboModels } from "../services/model.js";
@@ -72,6 +74,12 @@ export async function handleChat(request, clientRawRequest = null) {
       log.warn("AUTH", "Invalid API key (requireApiKey=true)");
       return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
     }
+  }
+
+  // Per-key quota (owner-scoped keys only), independent of requireApiKey.
+  if (apiKey) {
+    const quota = await enforceApiKeyQuota(apiKey);
+    if (quota) return errorResponse(quota.status, quota.message);
   }
 
   if (!modelStr) {
@@ -213,6 +221,12 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   }
 
   const { provider, model } = modelInfo;
+
+  const scopeErr = await enforceApiKeyScope(apiKey, provider, model);
+  if (scopeErr) {
+    log.warn("AUTH", `Scope denied: ${provider}/${model}`);
+    return errorResponse(scopeErr.status, scopeErr.message);
+  }
 
   // Routing shown in the unified "▶" line (client model → provider/model)
 

@@ -1,9 +1,9 @@
 {
-  "name": "9router",
+  "name": "aicoyy",
   "version": "0.5.50",
-  "description": "9Router CLI - Start and manage 9Router server",
+  "description": "aicoyy CLI - Start and manage the aicoyy server",
   "bin": {
-    "9router": "./cli.js"
+    "aicoyy": "./cli.js"
   },
   "files": [
     "cli.js",
@@ -34,6 +34,7 @@
     "node": ">=18.0.0"
   },
   "keywords": [
+    "aicoyy",
     "9router",
     "cli",
     "proxy",

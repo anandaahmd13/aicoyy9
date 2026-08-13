@@ -49,7 +49,7 @@ const readSettings = async () => {
 // Check if settings has 9Router customModels
 const has9RouterConfig = (settings) => {
   if (!settings || !settings.customModels) return false;
-  return settings.customModels.some(m => m.id?.startsWith("custom:9Router"));
+  return settings.customModels.some(m => m.id?.startsWith("custom:aicoyy") || m.id?.startsWith("custom:9Router"));
 };
 
 // GET - Check droid CLI and read current settings
@@ -111,8 +111,8 @@ export async function POST(request) {
       settings.customModels = [];
     }
 
-    // Remove all existing 9Router configs
-    settings.customModels = settings.customModels.filter(m => !m.id?.startsWith("custom:9Router"));
+    // Remove all existing aicoyy + legacy configs
+    settings.customModels = settings.customModels.filter(m => !(m.id?.startsWith("custom:aicoyy") || m.id?.startsWith("custom:9Router")));
 
     // Normalize baseUrl to ensure /v1 suffix
     const normalizedBaseUrl = baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`;
@@ -137,7 +137,7 @@ export async function POST(request) {
       if (!m || typeof m !== "string") continue;
       settings.customModels.push({
         model: m,
-        id: `custom:9Router-${i}`,
+        id: `custom:aicoyy-${i}`,
         index: i,
         baseUrl: normalizedBaseUrl,
         apiKey: keyToUse,
@@ -193,7 +193,7 @@ export async function DELETE() {
 
     // Remove 9Router customModels
     if (settings.customModels) {
-      settings.customModels = settings.customModels.filter(m => !m.id?.startsWith("custom:9Router"));
+      settings.customModels = settings.customModels.filter(m => !(m.id?.startsWith("custom:aicoyy") || m.id?.startsWith("custom:9Router")));
       
       // Remove customModels array if empty
       if (settings.customModels.length === 0) {

@@ -1,8 +1,10 @@
-export const GROK_MAIN_MODEL_SLOT = "9router";
+export const GROK_MAIN_MODEL_SLOT = "aicoyy";
 export const GROK_BUILTIN_DEFAULT = "grok-build";
 export const GROK_SUBAGENT_TYPES = ["general-purpose", "explore", "plan"];
+// Legacy slot name from the 9router era — stripped on apply/reset so old configs re-point cleanly.
+const LEGACY_MAIN_MODEL_SLOT = "9router";
 
-const UNSET_SENTINEL = "__9router_unset__";
+const UNSET_SENTINEL = "__aicoyy_unset__";
 const MODELS_SECTION = "models";
 const SUBAGENT_MODELS_SECTION = "subagents.models";
 
@@ -17,10 +19,10 @@ const sectionRegExp = (section) =>
 
 const modelSlot = (type) => `${GROK_MAIN_MODEL_SLOT}-${type}`;
 
-const previousDefaultRegExp = /^# 9router-prev-default = "([^"]*)"[ \t]*\r?\n?/m;
+const previousDefaultRegExp = /^# aicoyy-prev-default = "([^"]*)"[ \t]*\r?\n?/m;
 const previousSubagentRegExp = (type) =>
   new RegExp(
-    `^# 9router-prev-subagent-${escapeRegExp(type)} = "([^"]*)"[ \\t]*\\r?\\n?`,
+    `^# aicoyy-prev-subagent-${escapeRegExp(type)} = "([^"]*)"[ \\t]*\\r?\\n?`,
     "m",
   );
 
@@ -97,7 +99,7 @@ function buildModelSection({ slot, model, baseUrl, apiKey, contextWindow, name }
     `model = ${tomlString(model)}`,
     `base_url = ${tomlString(baseUrl)}`,
     `name = ${tomlString(name)}`,
-    `description = ${tomlString("Routed via 9Router gateway")}`,
+    `description = ${tomlString("Routed via aicoyy gateway")}`,
     `api_backend = "chat_completions"`,
   ];
   if (apiKey) lines.push(`api_key = ${tomlString(apiKey)}`);
@@ -132,7 +134,7 @@ function rememberPreviousDefault(toml) {
   if (previousDefaultRegExp.test(toml)) return toml;
   const current = getSectionField(toml, MODELS_SECTION, "default");
   if (!current || current === GROK_MAIN_MODEL_SLOT) return toml;
-  return insertMarker(toml, `# 9router-prev-default = ${tomlString(current)}\n`);
+  return insertMarker(toml, `# aicoyy-prev-default = ${tomlString(current)}\n`);
 }
 
 function restorePreviousDefault(toml) {
@@ -151,7 +153,7 @@ function rememberPreviousSubagent(toml, type) {
   const previous = current == null ? UNSET_SENTINEL : current;
   return insertMarker(
     toml,
-    `# 9router-prev-subagent-${type} = ${tomlString(previous)}\n`,
+    `# aicoyy-prev-subagent-${type} = ${tomlString(previous)}\n`,
   );
 }
 
@@ -202,9 +204,11 @@ export function applyGrokBuildConfig(
     baseUrl,
     apiKey,
     contextWindow,
-    name: "9Router",
+    name: "aicoyy",
   });
   next = setSectionField(next, MODELS_SECTION, "default", GROK_MAIN_MODEL_SLOT);
+  // Drop any stale legacy-named main slot from a prior 9router install.
+  next = removeModelSection(next, LEGACY_MAIN_MODEL_SLOT);
 
   if (subagentModels && typeof subagentModels === "object") {
     for (const type of GROK_SUBAGENT_TYPES) {
@@ -218,7 +222,7 @@ export function applyGrokBuildConfig(
           baseUrl,
           apiKey,
           contextWindow: selected.contextWindow,
-          name: `9Router ${type}`,
+          name: `aicoyy ${type}`,
         });
         next = setSectionField(next, SUBAGENT_MODELS_SECTION, type, slot);
       } else {
@@ -238,6 +242,7 @@ export function resetGrokBuildConfig(toml) {
     next = removeModelSection(next, modelSlot(type));
   }
   next = removeModelSection(next, GROK_MAIN_MODEL_SLOT);
+  next = removeModelSection(next, LEGACY_MAIN_MODEL_SLOT);
   next = restorePreviousDefault(next);
   return next.replace(/\n{3,}/g, "\n\n");
 }

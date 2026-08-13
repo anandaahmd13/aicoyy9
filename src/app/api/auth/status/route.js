@@ -15,6 +15,8 @@ export async function GET() {
     const oidcEmail = String(session?.oidcEmail || "").trim();
     const displayName = oidcName || oidcEmail || (session?.oidc ? "OIDC user" : "Password user");
     const loginMethod = session?.oidc ? "OIDC" : "Password";
+    // Default a bare authenticated session (e.g. OIDC, or legacy pre-role cookie) to admin.
+    const role = session ? (session.role || "admin") : null;
 
     return NextResponse.json({
       requireLogin,
@@ -25,6 +27,9 @@ export async function GET() {
       displayName,
       loginMethod,
       authenticated: !!session,
+      role,
+      userId: session?.userId || null,
+      username: session?.username || null,
       oidcName: oidcName || null,
       oidcEmail: oidcEmail || null,
       oidcLogin: !!session?.oidc,

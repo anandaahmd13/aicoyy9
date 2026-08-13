@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getApiKeys, createApiKey } from "@/lib/localDb";
+import { normalizeScopes } from "@/lib/db/repos/apiKeysRepo.js";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 
 export const dynamic = "force-dynamic";
@@ -19,7 +20,7 @@ export async function GET() {
 export async function POST(request) {
   try {
     const body = await request.json();
-    const { name } = body;
+    const { name, ownerUserId, tokenLimit, expiresAt, scopes } = body;
 
     if (!name) {
       return NextResponse.json({ error: "Name is required" }, { status: 400 });
@@ -27,7 +28,12 @@ export async function POST(request) {
 
     // Always get machineId from server
     const machineId = await getConsistentMachineId();
-    const apiKey = await createApiKey(name, machineId);
+    const apiKey = await createApiKey(name, machineId, {
+      ownerUserId: ownerUserId ?? null,
+      tokenLimit: tokenLimit != null && tokenLimit !== "" ? Number(tokenLimit) : null,
+      expiresAt: expiresAt || null,
+      scopes: normalizeScopes(scopes),
+    });
 
     return NextResponse.json({
       key: apiKey.key,

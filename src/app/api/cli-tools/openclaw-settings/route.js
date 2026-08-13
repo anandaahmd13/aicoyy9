@@ -59,16 +59,16 @@ const readSettings = async () => {
 // Check if settings has 9Router config
 const has9RouterConfig = (settings) => {
   if (!settings || !settings.models || !settings.models.providers) return false;
-  return !!settings.models.providers["9router"];
+  return !!(settings.models.providers["aicoyy"] || settings.models.providers["9router"]);
 };
 
-// Read per-agent models.json and return current model id (without "9router/" prefix)
+// Read per-agent models.json and return current model id (without "aicoyy/" prefix)
 const readAgentModel = async (agentDir) => {
   try {
     const modelsPath = path.join(agentDir, "models.json");
     const content = await fs.readFile(modelsPath, "utf-8");
     const data = JSON.parse(content);
-    const models = data?.providers?.["9router"]?.models;
+    const models = data?.providers?.["aicoyy"]?.models || data?.providers?.["9router"]?.models;
     return models?.[0]?.id || null;
   } catch {
     return null;
@@ -125,12 +125,13 @@ const writeAgentModels = async (agentDir, model, baseUrl, apiKey) => {
   } catch { /* No existing */ }
 
   if (!existing.providers) existing.providers = {};
-  existing.providers["9router"] = {
+  existing.providers["aicoyy"] = {
     baseUrl,
     apiKey: apiKey || "your_api_key",
     api: "openai-completions",
     models: [{ id: model, name: model.split("/").pop() || model }],
   };
+  delete existing.providers["9router"];
   await fs.writeFile(modelsPath, JSON.stringify(existing, null, 2));
 };
 
@@ -163,11 +164,11 @@ export async function POST(request) {
     if (!settings.models.providers) settings.models.providers = {};
 
     const normalizedBaseUrl = baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`;
-    const fullModelId = `9router/${model}`;
+    const fullModelId = `aicoyy/${model}`;
 
-    // Remove all old 9router/* entries from agents.defaults.models
+    // Remove all old aicoyy/* + legacy 9router/* entries from agents.defaults.models
     Object.keys(settings.agents.defaults.models)
-      .filter((k) => k.startsWith("9router/"))
+      .filter((k) => k.startsWith("aicoyy/") || k.startsWith("9router/"))
       .forEach((k) => { delete settings.agents.defaults.models[k]; });
 
     // Update default model
@@ -179,14 +180,14 @@ export async function POST(request) {
 
     // Add fresh 9router models to allowlist
     allModelIds.forEach((m) => {
-      settings.agents.defaults.models[`9router/${m}`] = {};
+      settings.agents.defaults.models[`aicoyy/${m}`] = {};
     });
 
     // Remove old 9router model from each agent in agents.list. The
     // model field may be a plain string or `{ primary, fallbacks }`.
     if (settings.agents.list) {
       settings.agents.list = settings.agents.list.map((agent) => {
-        if (resolveAgentModel(agent.model).startsWith("9router/")) {
+        if (resolveAgentModel(agent.model).startsWith("aicoyy/") || resolveAgentModel(agent.model).startsWith("9router/")) {
           const { model: _, ...rest } = agent;
           return rest;
         }
@@ -194,19 +195,20 @@ export async function POST(request) {
       });
     }
 
-    // Update models.providers.9router with all models
-    settings.models.providers["9router"] = {
+    // Update models.providers with all models; strip stale legacy-named provider.
+    settings.models.providers["aicoyy"] = {
       baseUrl: normalizedBaseUrl,
       apiKey: apiKey || "your_api_key",
       api: "openai-completions",
       models: [...allModelIds].map((m) => ({ id: m, name: m.split("/").pop() || m })),
     };
+    delete settings.models.providers["9router"];
 
     // Set per-agent model in agents.list and write models.json
     if (settings.agents.list) {
       settings.agents.list = settings.agents.list.map((agent) => {
         const agentModel = agentModels[agent.id];
-        if (agentModel) return { ...agent, model: `9router/${agentModel}` };
+        if (agentModel) return { ...agent, model: `aicoyy/${agentModel}` };
         return agent;
       });
 
@@ -254,19 +256,20 @@ export async function DELETE() {
       throw error;
     }
 
-    // Remove 9Router from models.providers
+    // Remove aicoyy (+ legacy 9router) from models.providers
     if (settings.models && settings.models.providers) {
+      delete settings.models.providers["aicoyy"];
       delete settings.models.providers["9router"];
-      
+
       // Remove providers object if empty
       if (Object.keys(settings.models.providers).length === 0) {
         delete settings.models.providers;
       }
     }
 
-    // Remove 9router models from agents.defaults.models allowlist
+    // Remove aicoyy/legacy models from agents.defaults.models allowlist
     if (settings.agents?.defaults?.models) {
-      const keysToRemove = Object.keys(settings.agents.defaults.models).filter((k) => k.startsWith("9router/"));
+      const keysToRemove = Object.keys(settings.agents.defaults.models).filter((k) => k.startsWith("aicoyy/") || k.startsWith("9router/"));
       for (const key of keysToRemove) {
         delete settings.agents.defaults.models[key];
       }
@@ -275,8 +278,8 @@ export async function DELETE() {
       }
     }
 
-    // Reset agents.defaults.model.primary if it uses 9router
-    if (settings.agents?.defaults?.model?.primary?.startsWith("9router/")) {
+    // Reset agents.defaults.model.primary if it uses aicoyy/legacy
+    if (settings.agents?.defaults?.model?.primary?.startsWith("aicoyy/") || settings.agents?.defaults?.model?.primary?.startsWith("9router/")) {
       delete settings.agents.defaults.model.primary;
     }
 

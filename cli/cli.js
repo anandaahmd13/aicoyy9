@@ -92,7 +92,7 @@ try { ensureTrayRuntime({ silent: true }); } catch {}
 const APP_NAME = pkg.name; // Use from package.json
 const INSTALL_CMD_LATEST = `npm i -g ${APP_NAME}@latest --prefer-online`;
 
-const DEFAULT_PORT = 20128;
+const DEFAULT_PORT = 30128;
 const DEFAULT_HOST = "0.0.0.0";
 
 // First non-internal IPv4 — the address remote peers actually reach when bound to 0.0.0.0.
@@ -110,9 +110,10 @@ function getDisplayHost() {
   return host === DEFAULT_HOST ? "localhost" : host;
 }
 const MAX_PORT_ATTEMPTS = 10;
-// Identifiers for killAllAppProcesses - only kill 9router specifically
+// Identifiers for killAllAppProcesses - only kill our own processes specifically
 const PROCESS_IDENTIFIERS = [
-  '9router'  // Only package name - avoid killing other apps
+  'aicoyy',  // package name
+  '9router'  // legacy package name (kill stragglers from a prior install)
 ];
 
 // Parse arguments
@@ -188,9 +189,28 @@ function compareVersions(a, b) {
 // Get app data dir (matches app/src/lib/dataDir.js convention)
 function getAppDataDir() {
   return process.platform === "win32"
-    ? path.join(process.env.APPDATA || "", "9router")
-    : path.join(os.homedir(), ".9router");
+    ? path.join(process.env.APPDATA || "", "aicoyy")
+    : path.join(os.homedir(), ".aicoyy");
 }
+
+// One-time copy of the legacy ~/.9router data dir into ~/.aicoyy (marker-guarded,
+// copy-not-move so the old dir stays as rollback). Mirrors src/lib/dataDirMigrate.js
+// for the CLI entry point (runs before the server is spawned). No-op if DATA_DIR is set.
+function migrateLegacyDataDirCli() {
+  try {
+    if (process.env.DATA_DIR) return;
+    const home = os.homedir();
+    const isWin = process.platform === "win32";
+    const oldDir = isWin ? path.join(process.env.APPDATA || "", "9router") : path.join(home, ".9router");
+    const newDir = isWin ? path.join(process.env.APPDATA || "", "aicoyy") : path.join(home, ".aicoyy");
+    if (!fs.existsSync(oldDir)) return;
+    // Skip if new dir already has content.
+    if (fs.existsSync(newDir) && fs.readdirSync(newDir).length > 0) return;
+    fs.cpSync(oldDir, newDir, { recursive: true });
+    fs.writeFileSync(path.join(newDir, ".migrated-from-9router"), new Date().toISOString());
+  } catch { /* best-effort; server will create a fresh dir if this fails */ }
+}
+migrateLegacyDataDirCli();
 
 // Kill PID from file (best-effort, removes file after)
 function killByPidFile(pidFile) {
@@ -277,7 +297,7 @@ function killAllAppProcesses(appPort) {
             // Avoids killing editors/grep/strace/cursor that just have "9router" in cmdline.
             const cmd = line.toLowerCase();
             const isAppProcess =
-              (cmd.includes("node") && cmd.includes("9router") && (cmd.includes("cli.js") || cmd.includes("\\9router") || cmd.includes("/9router")))
+              (cmd.includes("node") && (cmd.includes("aicoyy") || cmd.includes("9router")) && (cmd.includes("cli.js") || cmd.includes("\\aicoyy") || cmd.includes("/aicoyy") || cmd.includes("\\9router") || cmd.includes("/9router")))
               || cmd.includes("next-server");
             if (isAppProcess) {
               const match = line.match(/^"(\d+)"/);
@@ -303,7 +323,7 @@ function killAllAppProcesses(appPort) {
             // Avoids killing grep/strace/editors/cursor that incidentally match "9router".
             const cmd = line.toLowerCase();
             const isAppProcess =
-              (cmd.includes("node") && cmd.includes("9router") && (cmd.includes("cli.js") || cmd.includes("/9router")))
+              (cmd.includes("node") && (cmd.includes("aicoyy") || cmd.includes("9router")) && (cmd.includes("cli.js") || cmd.includes("/aicoyy") || cmd.includes("/9router")))
               || cmd.includes("next-server");
             if (isAppProcess) {
               const parts = line.trim().split(/\s+/);
@@ -838,7 +858,7 @@ function startServer(updatePromise) {
     if (restartCount >= MAX_RESTARTS) {
       console.error(`\n⚠️  Server crashed ${MAX_RESTARTS} times. Disabling MIT and restarting...`);
       try {
-        const dbPath = path.join(os.homedir(), process.platform === "win32" ? path.join("AppData", "Roaming", "9router", "db.json") : path.join(".9router", "db.json"));
+        const dbPath = path.join(getAppDataDir(), "db.json");
         if (fs.existsSync(dbPath)) {
           const db = JSON.parse(fs.readFileSync(dbPath, "utf-8"));
           if (db.settings) db.settings.mitmEnabled = false;

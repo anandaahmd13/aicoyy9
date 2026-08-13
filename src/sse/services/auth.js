@@ -1,8 +1,9 @@
-import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings, getProxyPools } from "@/lib/localDb";
+import { getProviderConnections, validateApiKey, checkApiKey, updateProviderConnection, getSettings, getProxyPools } from "@/lib/localDb";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
+import { normalizeModelId } from "open-sse/providers/models/schema.js";
 import * as log from "../utils/logger.js";
 
 // Mutex to prevent race conditions during account selection
@@ -338,4 +339,62 @@ export function extractApiKey(request) {
 export async function isValidApiKey(apiKey) {
   if (!apiKey) return false;
   return await validateApiKey(apiKey);
+}
+
+/**
+ * Hard quota enforcement for owned (member) keys.
+ * Returns null when ok / unlimited / admin-local key (ownerUserId null → skip),
+ * else an error descriptor { status, message } to short-circuit the request.
+ */
+export async function enforceApiKeyQuota(apiKey) {
+  if (!apiKey) return null;
+  const status = await checkApiKey(apiKey);
+  if (status.ok) return null;
+  // Unowned keys (admin/local) are never quota-limited.
+  if (status.ownerUserId == null && (status.reason === "exhausted" || status.reason === "expired")) return null;
+  switch (status.reason) {
+    case "exhausted":
+      return { status: 402, message: "API key token quota exhausted" };
+    case "expired":
+      return { status: 402, message: "API key has expired" };
+    case "inactive":
+      return { status: 403, message: "API key is inactive" };
+    case "invalid":
+      return { status: 401, message: "Invalid API key" };
+    default:
+      return { status: 403, message: "API key not allowed" };
+  }
+}
+
+/**
+ * Pure scope decision: given a key's scopes object (or null), decide whether
+ * provider/model is allowed. Returns null when allowed, else { status, message }.
+ * Exported for unit testing without a DB round-trip.
+ */
+export function scopeDecision(scopes, provider, model) {
+  const providers = scopes?.providers;
+  if (!providers) return null; // unrestricted
+  const providerId = resolveProviderId(provider) || provider;
+  const allowed = providers[providerId] ?? providers[provider];
+  if (allowed === undefined) {
+    return { status: 403, message: `API key not allowed for provider ${providerId}` };
+  }
+  if (Array.isArray(allowed) && allowed.length > 0) {
+    const want = normalizeModelId(model);
+    const ok = allowed.some((m) => normalizeModelId(m) === want);
+    if (!ok) return { status: 403, message: `API key not allowed for model ${providerId}/${model}` };
+  }
+  return null;
+}
+
+/**
+ * Per-key provider/model access scope. Returns null when allowed (or key has no
+ * scope restriction), else an error descriptor { status, message } to short-circuit.
+ * A provider maps to an allowed-model list; an empty list means "all models" of it.
+ * Model comparison is dot/dash tolerant (client "claude-opus-4-8" ↔ stored "claude-opus-4.8").
+ */
+export async function enforceApiKeyScope(apiKey, provider, model) {
+  if (!apiKey) return null;
+  const status = await checkApiKey(apiKey);
+  return scopeDecision(status?.scopes ?? null, provider, model);
 }

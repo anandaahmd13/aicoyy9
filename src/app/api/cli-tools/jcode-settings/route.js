@@ -15,6 +15,10 @@ const getConfigPath = () => path.join(getJcodeConfigDir(), "config.toml");
 
 const getProviderEnvPath = () => {
   const configDir = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
+  return path.join(configDir, "jcode", "provider-aicoyy.env");
+};
+const getLegacyProviderEnvPath = () => {
+  const configDir = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
   return path.join(configDir, "jcode", "provider-9router.env");
 };
 
@@ -49,10 +53,10 @@ const has9RouterConfig = (config) => {
 
   const providers = config.providers;
 
-  if (providers["9router"]) return true;
+  if (providers["aicoyy"] || providers["9router"]) return true;
 
   for (const [name, provider] of Object.entries(providers)) {
-    if (provider.base_url && provider.base_url.includes("localhost:20128")) {
+    if (provider.base_url && provider.base_url.includes("localhost:30128")) {
       return true;
     }
   }
@@ -149,12 +153,14 @@ export async function POST(request) {
       config.providers = {};
     }
 
-    config.providers["9router"] = {
+    // Strip any prior config under the old and new provider names before writing fresh.
+    delete config.providers["9router"];
+    config.providers["aicoyy"] = {
       type: "openai-compatible",
       base_url: normalizedBaseUrl,
       auth: "bearer",
-      api_key_env: "JCODE_9ROUTER_API_KEY",
-      env_file: "provider-9router.env",
+      api_key_env: "JCODE_AICOYY_API_KEY",
+      env_file: "provider-aicoyy.env",
       default_model: models && models.length > 0 ? models[0] : "cc/claude-opus-4-7",
       requires_api_key: true,
     };
@@ -169,12 +175,15 @@ export async function POST(request) {
     await fs.mkdir(jcodeConfigDir, { recursive: true });
 
     const env = await readProviderEnv();
-    env.JCODE_9ROUTER_API_KEY = apiKey;
+    delete env.JCODE_9ROUTER_API_KEY;
+    env.JCODE_AICOYY_API_KEY = apiKey;
     await writeProviderEnv(env);
+    // Remove the stale legacy env file so the old provider profile can't linger.
+    try { await fs.unlink(getLegacyProviderEnvPath()); } catch { /* not present */ }
 
     return NextResponse.json({
       success: true,
-      message: "jcode configured successfully. Use: jcode --provider-profile 9router",
+      message: "jcode configured successfully. Use: jcode --provider-profile aicoyy",
       configPath: getConfigPath(),
     });
   } catch (error) {
@@ -194,17 +203,19 @@ export async function DELETE() {
       return NextResponse.json({ success: true, message: "No configuration to remove" });
     }
 
+    delete config.providers["aicoyy"];
     delete config.providers["9router"];
 
     await writeConfig(config);
 
     const env = await readProviderEnv();
+    delete env.JCODE_AICOYY_API_KEY;
     delete env.JCODE_9ROUTER_API_KEY;
     await writeProviderEnv(env);
 
     return NextResponse.json({
       success: true,
-      message: "9router configuration removed from jcode",
+      message: "aicoyy configuration removed from jcode",
     });
   } catch (error) {
     console.error("Error removing jcode configuration:", error);

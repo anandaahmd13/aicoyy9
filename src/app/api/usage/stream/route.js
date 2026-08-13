@@ -1,9 +1,12 @@
 import { getUsageStats, statsEmitter, getActiveRequests } from "@/lib/usageDb";
+import { getSessionScope } from "@/lib/auth/scope";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   const encoder = new TextEncoder();
+  const { apiKeys } = await getSessionScope();
+  const scoped = Array.isArray(apiKeys); // member → scoped, no global live fields
   const state = { closed: false, keepalive: null, send: null, sendPending: null, cachedStats: null };
 
   const stream = new ReadableStream({
@@ -12,14 +15,15 @@ export async function GET() {
       state.send = async () => {
         if (state.closed) return;
         try {
-          // Push lightweight update immediately so UI reflects changes fast
-          if (state.cachedStats) {
+          // Push lightweight update immediately so UI reflects changes fast.
+          // Global activeRequests/recentRequests are not per-key attributable → omitted when scoped.
+          if (state.cachedStats && !scoped) {
             const { activeRequests, recentRequests, errorProvider } = await getActiveRequests();
             const quickStats = { ...state.cachedStats, activeRequests, recentRequests, errorProvider };
             controller.enqueue(encoder.encode(`data: ${JSON.stringify(quickStats)}\n\n`));
           }
           // Then do full recalc and update cache
-          const stats = await getUsageStats();
+          const stats = await getUsageStats("all", { scopeKeys: apiKeys });
           state.cachedStats = stats;
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(stats)}\n\n`));
         } catch {
@@ -30,9 +34,9 @@ export async function GET() {
         }
       };
 
-      // Lightweight push: only refresh activeRequests + recentRequests on pending changes
+      // Lightweight push: only refresh activeRequests + recentRequests on pending changes (admin only)
       state.sendPending = async () => {
-        if (state.closed || !state.cachedStats) return;
+        if (state.closed || !state.cachedStats || scoped) return;
         try {
           const { activeRequests, recentRequests, errorProvider } = await getActiveRequests();
           const stats = { ...state.cachedStats, activeRequests, recentRequests, errorProvider };
