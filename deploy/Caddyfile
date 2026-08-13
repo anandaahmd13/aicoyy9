@@ -12,6 +12,15 @@ aicoyy.dev {
 		respond "Dashboard lives at https://track.aicoyy.dev" 404
 	}
 
+	# Coming-soon landing — browsers hitting the bare root only.
+	# API clients use /v1/* and fall through to the reverse_proxy below.
+	@root path /
+	handle @root {
+		root * /var/www/aicoyy
+		rewrite * /coming-soon.html
+		file_server
+	}
+
 	handle {
 		reverse_proxy 127.0.0.1:20128 {
 			# App reads the real client IP from these (peer is loopback → trusted).
