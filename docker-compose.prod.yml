@@ -1,0 +1,23 @@
+services:
+  aicoyy:
+    build: .
+    container_name: aicoyy
+    restart: always
+    # Host networking so the app's TCP peer for a local Caddy is 127.0.0.1.
+    # custom-server.js only trusts X-Forwarded-For from a loopback proxy — this
+    # keeps per-client login rate-limiting and IP logging correct behind Caddy.
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      DATA_DIR: /app/data
+      PORT: "20128"
+      HOSTNAME: "127.0.0.1"   # listen on loopback only; Caddy (host) faces the internet
+      NODE_ENV: production
+    volumes:
+      - aicoyy-data:/app/data
+
+volumes:
+  aicoyy-data:
+    name: aicoyy-data
+# skipped: headroom (optional token-saver, only when enabled in settings), add when needed.

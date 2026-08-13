@@ -1,0 +1,27 @@
+# Gateway — OpenAI-compatible endpoint. Clients use https://aicoyy.dev/v1/...
+aicoyy.dev {
+	encode zstd gzip
+	# LLM payloads can be large (long context / base64 images). Raise limits.
+	request_body {
+		max_size 100MB
+	}
+	reverse_proxy 127.0.0.1:20128 {
+		# App reads the real client IP from these (peer is loopback → trusted).
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Real-IP {remote_host}
+		# Streaming (SSE): don't buffer, allow long-lived responses.
+		flush_interval -1
+		transport http {
+			response_header_timeout 10m
+		}
+	}
+}
+
+# Dashboard — admin/member web UI at https://track.aicoyy.dev/dashboard
+track.aicoyy.dev {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:20128 {
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Real-IP {remote_host}
+	}
+}
