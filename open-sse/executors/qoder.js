@@ -238,6 +238,95 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
  * response.text() which hangs until the socket closes — so on terminal
  * events we cancel the upstream reader and close our stream immediately.
  */
+/**
+ * Peek the leading frames of a Qoder 200-OK SSE stream to detect an error
+ * envelope that arrives *before* any real content (the quota/auth-exhausted
+ * case: Qoder answers HTTP 200 and puts a {statusCodeValue: 403, ...} frame in
+ * the body instead of an HTTP error). Left in the stream, wrapQoderSSE would
+ * turn that into assistant text, so chatCore never sees a failure and account
+ * fallback never fires. Surfacing it as a real error Response lets chatCore
+ * classify the status and rotate to the next account.
+ *
+ * Returns either `{ error: { status, message } }` (leading error frame found)
+ * or `{ response }` (a reconstructed Response whose body re-emits the peeked
+ * bytes then streams the rest — hand this to wrapQoderSSE). Fail-open: any read
+ * error or a >64KB peek without a verdict is treated as "no leading error".
+ */
+async function peekQoderError(response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const consumed = [];
+  let buffer = "";
+  let totalBytes = 0;
+  let errorResult = null;
+
+  try {
+    let decided = false;
+    while (!decided) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      consumed.push(value);
+      totalBytes += value.byteLength;
+      buffer += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buffer.indexOf("\n")) !== -1) {
+        const line = buffer.slice(0, nl).replace(/\r$/, "").trim();
+        buffer = buffer.slice(nl + 1);
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trimStart();
+        if (!data) continue;
+        if (data === "[DONE]") { decided = true; break; }
+        let envelope;
+        try { envelope = JSON.parse(data); } catch { continue; }
+        const statusVal = typeof envelope.statusCodeValue === "number" ? envelope.statusCodeValue : 200;
+        if (statusVal !== 200) {
+          const inner = typeof envelope.body === "string" ? envelope.body : "";
+          errorResult = { status: statusVal, message: inner || `qoder upstream status ${statusVal}` };
+          decided = true;
+          break;
+        }
+        // 200 with real content → genuine response; stop peeking. Empty-body
+        // 200 frames are keepalives — skip them and keep scanning for a
+        // trailing error frame.
+        const inner = typeof envelope.body === "string" ? envelope.body : "";
+        if (inner && inner !== "[DONE]") { decided = true; break; }
+        if (inner === "[DONE]") { decided = true; break; }
+      }
+      if (!decided && totalBytes > 65536) break; // bound the peek; treat as OK
+    }
+  } catch {
+    // fail-open: fall through and hand back whatever was consumed
+  }
+
+  if (errorResult) {
+    await reader.cancel().catch(() => {});
+    return { error: errorResult };
+  }
+
+  const stream = new ReadableStream({
+    start(controller) {
+      for (const c of consumed) controller.enqueue(c);
+    },
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) { controller.close(); return; }
+        controller.enqueue(value);
+      } catch (e) {
+        controller.error(e);
+      }
+    },
+    cancel(reason) { return reader.cancel(reason); },
+  });
+
+  const rebuilt = new Response(stream, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+  return { response: rebuilt };
+}
+
 function wrapQoderSSE(response, model) {
   if (!response.ok || !response.body) return response;
 
@@ -480,7 +569,22 @@ export class QoderExecutor extends BaseExecutor {
       return { response, url, headers, transformedBody: payload };
     }
 
-    const wrapped = wrapQoderSSE(response, `qoder/${qoderKey}`);
+    // Qoder answers HTTP 200 even when quota is exhausted, putting a
+    // {statusCodeValue: 403|429|...} frame in the SSE body. Peek the leading
+    // frames: if the stream opens with an error envelope, surface it as a real
+    // error Response so chatCore classifies the status and account fallback
+    // fires — otherwise wrapQoderSSE would bury it as assistant text.
+    const peeked = await peekQoderError(response);
+    if (peeked.error) {
+      const { status, message } = peeked.error;
+      const errResp = new Response(
+        JSON.stringify({ error: { message: truncate(message, 500) } }),
+        { status: status || 502, headers: { "Content-Type": "application/json" } },
+      );
+      return { response: errResp, url, headers, transformedBody: payload };
+    }
+
+    const wrapped = wrapQoderSSE(peeked.response, `qoder/${qoderKey}`);
     return { response: wrapped, url, headers, transformedBody: payload };
   }
 
