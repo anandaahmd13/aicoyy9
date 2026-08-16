@@ -743,6 +743,59 @@ export default function ProviderLimits() {
     bulkSetActive(ids, true);
   };
 
+  const handleDeleteDepleted = async () => {
+    if (bulkToggling) return;
+    const ids = sortedConnections
+      .filter((c) => isConnectionDepleted(c))
+      .map((c) => c.id);
+    if (!ids.length) return;
+    if (
+      !confirm(
+        `Delete ${ids.length} connection(s) with depleted quota? This cannot be undone.`,
+      )
+    )
+      return;
+    setBulkToggling(true);
+    try {
+      await Promise.all(
+        ids.map((id) => fetch(`/api/providers/${id}`, { method: "DELETE" })),
+      );
+
+      const prune = (prev) => {
+        const next = { ...prev };
+        for (const id of ids) delete next[id];
+        return next;
+      };
+      setQuotaData(prune);
+      setLoading(prune);
+      setErrors(prune);
+
+      if (typeof window !== "undefined") {
+        try {
+          const cache = getQuotaCache();
+          let changed = false;
+          for (const id of ids) {
+            if (cache[id]) {
+              delete cache[id];
+              changed = true;
+            }
+          }
+          if (changed) {
+            window.localStorage.setItem(QUOTA_CACHE_KEY, JSON.stringify(cache));
+          }
+        } catch (e) {
+          console.error("Error deleting cache entries:", e);
+        }
+      }
+
+      await reconcileConnectionsPage(fetchConnections, page);
+    } catch (error) {
+      console.error("Error bulk deleting depleted connections:", error);
+    } finally {
+      setBulkToggling(false);
+    }
+  };
+
   const selectedProviderLabel =
     providerFilter === "all" ? "All providers" : providerFilter;
   const hasEligibleConnections = totals.eligibleConnections > 0;
@@ -954,6 +1007,18 @@ export default function ProviderLimits() {
           >
             <span className="material-symbols-outlined text-[14px]">block</span>
             <span className="hidden sm:inline">Turn off Empty</span>
+          </button>
+
+          {/* Bulk: delete depleted */}
+          <button
+            type="button"
+            onClick={handleDeleteDepleted}
+            disabled={bulkToggling}
+            className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-red-500/40 px-2 text-xs text-red-500 transition-colors hover:bg-red-500/10 disabled:opacity-50"
+            title="Delete connections with depleted quota on the current page"
+          >
+            <span className="material-symbols-outlined text-[14px]">delete</span>
+            <span className="hidden sm:inline">Delete Empty</span>
           </button>
 
           {/* Bulk: enable available */}
