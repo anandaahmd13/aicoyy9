@@ -46,6 +46,11 @@ function normalizeGeminiContents(contents) {
 }
 
 // Core: Convert OpenAI request to Gemini format (base for all variants)
+// The target format is determined by which function calls this base:
+// - openaiToGeminiRequest() → FORMATS.GEMINI (Google Vertex AI Gemini API)
+// - openaiToGeminiCLIRequest() → FORMATS.GEMINI_CLI (Gemini CLI / CodeWhisperer)
+// - openaiToAntigravityRequest() → FORMATS.ANTIGRAVITY (Antigravity sandbox)
+// Each target has different schema requirements, so cleaning is applied per-target.
 function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG_SIGNATURE) {
   const result = {
     model: model,
@@ -203,6 +208,8 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
     for (const t of body.tools) {
       // Check if already in Anthropic/Claude format (no type field, direct name/description/input_schema)
       if (t.name && t.input_schema) {
+        // Only clean schema for Gemini/Antigravity targets - not needed for other translators
+        // The target is determined by which function is calling this base function
         const cleanedSchema = cleanJSONSchemaForAntigravity(structuredClone(t.input_schema || { type: "object", properties: {} }));
         functionDeclarations.push({
           name: sanitizeGeminiFunctionName(t.name),
@@ -213,6 +220,7 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
       // OpenAI format
       else if (t.type === OPENAI_BLOCK.FUNCTION && t.function) {
         const fn = t.function;
+        // Only clean schema for Gemini/Antigravity targets
         const cleanedSchema = cleanJSONSchemaForAntigravity(structuredClone(fn.parameters || { type: "object", properties: {} }));
         functionDeclarations.push({
           name: sanitizeGeminiFunctionName(fn.name),

@@ -3,34 +3,31 @@
 import { safeParseJSON } from "../concerns/json.js";
 import { OPENAI_BLOCK } from "../schema/index.js";
 
-// Unsupported JSON Schema constraints that should be removed for Antigravity
+// Unsupported JSON Schema constraints that should be removed for Antigravity/Gemini
+// Only remove fields that Gemini API actually rejects - keep standard JSON Schema fields
 export const UNSUPPORTED_SCHEMA_CONSTRAINTS = [
   // Basic constraints (not supported by Gemini API)
   "minLength", "maxLength", "exclusiveMinimum", "exclusiveMaximum",
   "minItems", "maxItems", "format", "multipleOf",
-  // Array keywords the Gemini schema proto has no field for. Agent tool
-  // schemas set these routinely, and one occurrence rejects the whole request
-  // with "Unknown name ...: Cannot find field".
+  // Additional numeric constraints that Gemini may reject
+  "minimum", "maximum",
+  // Array keywords the Gemini schema proto has no field for
   "uniqueItems", "contains",
   // 2020-12 keywords with no Gemini equivalent
   "unevaluatedProperties", "unevaluatedItems", "contentSchema",
   // Claude rejects these in VALIDATED mode
   "default", "examples",
-  // JSON Schema meta keywords
-  "$schema", "$defs", "definitions", "const", "$ref", "$comment",
-  // Annotation keywords (rejected by Gemini/Antigravity - e.g. MCP tool schemas set these)
+  // JSON Schema meta keywords not needed for function calling
+  "$schema", "$defs", "definitions",
+  // Complex validation keywords that cause issues
+  "if", "then", "else", "dependentRequired", "dependentSchemas",
+  // Annotation keywords (rejected by Gemini/Antigravity)
   "deprecated", "readOnly", "writeOnly",
-  // Object validation keywords (not supported)
-  "additionalProperties", "propertyNames", "patternProperties", "enumDescriptions",
-  // Complex schema keywords (handled by flattenAnyOfOneOf/mergeAllOf)
-  "anyOf", "oneOf", "allOf", "not",
-  // Dependency keywords (not supported)
-  "dependencies", "dependentSchemas", "dependentRequired",
-  // Other unsupported keywords
-  "title", "optional", "deprecated", "if", "then", "else", "contentMediaType", "contentEncoding",
   // UI/Styling properties (from Cursor tools - NOT JSON Schema standard)
   "cornerRadius", "fillColor", "fontFamily", "fontSize", "fontWeight",
-  "gap", "padding", "strokeColor", "strokeThickness", "textColor"
+  "gap", "padding", "strokeColor", "strokeThickness", "textColor",
+  // Vendor extensions
+  "x-*"
 ];
 
 // Default safety settings
@@ -355,44 +352,23 @@ export function cleanJSONSchemaForAntigravity(schema) {
 
   cleanupRequired(cleaned);
 
-  // Phase 5: Add placeholder for empty object schemas (Antigravity requirement)
-  function addPlaceholders(obj) {
-    if (!obj || typeof obj !== "object") return;
-
-    // Empty schema {} (no type, no properties) after $ref removal — treat as object with placeholder
-    if (Object.keys(obj).length === 0) {
-      obj.type = "object";
-      obj.properties = {
-        reason: {
-          type: "string",
-          description: "Brief explanation of why you are calling this tool"
-        }
-      };
-      obj.required = ["reason"];
-      return;
-    }
-
-    if (obj.type === "object") {
-      if (!obj.properties || Object.keys(obj.properties).length === 0) {
-        obj.properties = {
-          reason: {
-            type: "string",
-            description: "Brief explanation of why you are calling this tool"
-          }
-        };
-        obj.required = ["reason"];
+  // Phase 5: Add placeholder for truly empty object schemas (Antigravity requirement)
+  // ONLY add placeholders if the entire schema is empty ({}) - don't add to nested objects
+  // This preserves original tool parameters while meeting Antigravity's minimum schema requirement
+  if (!cleaned.type && !cleaned.properties && !cleaned.required && Object.keys(cleaned).length === 0) {
+    cleaned.type = "object";
+    cleaned.properties = {
+      reason: {
+        type: "string",
+        description: "Brief explanation of why you are calling this tool"
       }
-    }
-
-    // Recurse into nested objects
-    for (const value of Object.values(obj)) {
-      if (value && typeof value === "object") {
-        addPlaceholders(value);
-      }
-    }
+    };
+    cleaned.required = ["reason"];
+  } else if (cleaned.type === "object" && (!cleaned.properties || Object.keys(cleaned.properties).length === 0)) {
+    // If it's an object with no properties, keep it as-is without forcing placeholder
+    // Some providers may accept empty object schemas
+    delete cleaned.required; // Ensure no mismatched required fields
   }
-
-  addPlaceholders(cleaned);
 
   return cleaned;
 }
