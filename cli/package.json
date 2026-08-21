@@ -1,6 +1,6 @@
 {
   "name": "aicoyy",
-  "version": "0.5.50",
+  "version": "0.5.55",
   "description": "aicoyy CLI - Start and manage the aicoyy server",
   "bin": {
     "aicoyy": "./cli.js"
